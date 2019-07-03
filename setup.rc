@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# Deactivate if possible
+deactivate  > /dev/null 2>&1
+
+# Create env if not yet available
+if [ ! -d "venv" ]; then
+  virtualenv -p python3 venv
+fi
+
+# Activate if possible
+. venv/bin/activate
+
+pip install -r requirements.txt
