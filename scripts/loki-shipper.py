@@ -1,3 +1,6 @@
+"""
+Lambda Function implementation to ship logs from CloudWatch to Grafana Loki
+"""
 import base64
 import datetime
 import gzip
@@ -17,6 +20,11 @@ LOKI_PUSH_API = '{}/api/prom/push'
 
 
 def __decode_log_data(log_event):
+    """
+    Utility function to decode and decompress the log stream received from AWS CloudWatch
+    :param log_event: The AWS CloudWatch Log event
+    :return: The decoded log event
+    """
     cw_data = log_event['awslogs']['data']
     compressed_payload = base64.b64decode(cw_data)
     decoded_payload = json.loads(gzip.decompress(compressed_payload))
@@ -54,7 +62,12 @@ def __create_loki_stream(log_data):
 
 
 def lambda_handler(event, context):
-    print(event)
+    """
+    Entry point of the Lambda function
+    :param event: The log event to be decoded and shipped to Loki
+    :param context: The AWS Lambda function context
+    :return: nothing
+    """
     log_data = __decode_log_data(event)
     loki_stream = __create_loki_stream(log_data)
     loki_endpoint = LOKI_PUSH_API.format(os.environ.get('LOKI_ENDPOINT', 'http://localhost:3100'))

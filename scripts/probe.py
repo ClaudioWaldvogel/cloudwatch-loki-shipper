@@ -1,3 +1,6 @@
+"""
+Dummy Lambda function to log to CloudWatch
+"""
 import logging
 
 logging.getLogger().setLevel(logging.INFO)

@@ -49,7 +49,7 @@ def probe(name, action):
     if action == 'start':
         log_group_arn = __create_or_update_log_group(log_group_name, tags)
         function_arn = __start_lambda(config)
-        __create_log_subscription(log_group_name, log_group_arn)
+        # __create_log_subscription(log_group_name, log_group_arn)
         __create_schedule_event('{}-trigger'.format(function_name), function_arn, tags)
 
     elif action == 'stop':
@@ -58,7 +58,7 @@ def probe(name, action):
 
 
 @cli.command(help="Deploy Loki shipper lambda function.")
-@click.option('-l', '--loki', required=True, help='Loki endpoint URL')
+@click.option('-l', '--loki', default='http://localhost:3100', help='Loki endpoint URL')
 @click.argument('action', nargs=1, type=click.Choice(['start', 'stop']))
 def shipper(loki, action):
     """        Starts/Stops the shipper lambda function    """
@@ -78,9 +78,19 @@ def shipper(loki, action):
     __start_lambda(config) if action == 'start' else __stop_lambda(config)
 
 
+@cli.command(help="Attach log group to the Loki shipper")
+@click.option('-t', '--tags', required=False, multiple=True, help='Tags to be attached to the log group')
+@click.argument('group', nargs=1, type=click.STRING)  # , help='The log group to be attached to shipper.')
+def attach(tags, group):
+    # Tag log group
+    tags_dict = dict((k.strip(), v.strip()) for k, v in (t.split('=') for t in tags)) if tags else None
+    __create_or_update_log_group(group, tags_dict)
+    __create_log_subscription(group)
+
+
 # Internal methods
 
-def __create_log_subscription(target_log_group, target_log_group_arn):
+def __create_log_subscription(target_log_group):
     """
     Adds a log subscription for the given log group to the shipper lambda function
     :param target_log_group: The log group to be watched
@@ -93,12 +103,17 @@ def __create_log_subscription(target_log_group, target_log_group_arn):
         get_shipper_response = lambda_client.get_function(FunctionName=SHIPPER_NAME)
 
         try:
+            describe_log_groups_response = log_client.describe_log_groups(logGroupNamePrefix=target_log_group)
+            if len(describe_log_groups_response['logGroups']) == 0:
+                print('LogGroup <{}> not available'.format(target_log_group))
+            log_group_arn = describe_log_groups_response['logGroups'][0]['arn']
+
             lambda_client.add_permission(
                 FunctionName=SHIPPER_NAME,
                 StatementId='{}-loki-log-shipper'.format(target_log_group.split('/')[-1]),
                 Action='lambda:InvokeFunction',
                 Principal="logs.eu-central-1.amazonaws.com",
-                SourceArn=target_log_group_arn
+                SourceArn=log_group_arn
             )
         except Exception as e:
             if not isinstance(e, lambda_client.exceptions.ResourceConflictException):
@@ -141,7 +156,7 @@ def __create_schedule_event(event_name, function_arn, function_input):
                              Targets=[target])
 
     try:
-        # Ensure CW is allowed to invoke the function
+        # Ensure CloudWatch is allowed to invoke the function
         lambda_client.add_permission(FunctionName=function_arn,
                                      StatementId=event_name,
                                      Action='lambda:InvokeFunction',
@@ -172,13 +187,15 @@ def __remove_scheduled_event(event_name):
 
 def __create_or_update_log_group(log_group_name, tags):
     log_client = b.client('logs', region_name=REGION)
-
     try:
-        log_client.create_log_group(logGroupName=log_group_name, tags=tags)
+        if tags:
+            log_client.create_log_group(logGroupName=log_group_name, tags=tags)
+        else:
+            log_client.create_log_group(logGroupName=log_group_name)
     except Exception as e:
         if not isinstance(e, log_client.exceptions.ResourceAlreadyExistsException):
             raise
-        else:
+        elif tags:
             log_client.tag_log_group(logGroupName=log_group_name, tags=tags)
 
     log_client.put_retention_policy(
