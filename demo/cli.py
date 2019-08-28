@@ -1,40 +1,76 @@
 import json
+import os
+import subprocess
 
 import boto3 as b
 import click
 
-REGION = 'eu-central-1'
-SHIPPER_NAME = 'loki-log-shipper'
+SHIPPER_NAME = 'loki-shipper'
+LOKI_SHIPPER_ROLE_NAME = 'loki-shipper'
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TARGET_DIR = os.path.join(PROJECT_DIR, "target")
+SHIPPER_ZIP = os.path.join(TARGET_DIR, 'shipper.zip')
+DEMO_LAMBDA_ZIP = os.path.join(TARGET_DIR, 'demo-lambda.zip')
+
+
+class CliContext(object):
+
+    def __init__(self):
+        self.aws_profile = 'default'
+
+
+# Enable context injection to click commands
+pass_context = click.make_pass_decorator(CliContext, ensure=True)
 
 
 @click.group('cli')
-def cli():
-    pass
+@click.option('-p', '--profile', default='default', help='The aws profile to be used. Needs to be defined in .aws/credentials. Defaults to <default>')
+@click.option('-r', '--region', default='eu-central-1', help='The aws region to be used. Defaults to <eu-central-1>')
+@pass_context
+def cli(context, profile, region):
+    context.aws_profile = profile
+    context.aws_region = region
+    b.setup_default_session(profile_name=context.aws_profile, region_name=region)
 
 
-@cli.command(help="Deploy a Loki logging demo application.")
+@cli.command(help='Build deployment packages')
+def package():
+    print('Creating deployment packages')
+    subprocess.call(['sh', os.path.join(PROJECT_DIR, 'package.sh')])
+
+
+@cli.command(short_help="Deploy a Loki logging demo application. It will be deployed: The Loki shipper function, 2 demo functions watched by the Loki shipper function.")
 @click.option('-l', '--loki', help='Loki endpoint URL')
+@click.option('-b', '--build', default=False, is_flag=True, help='Flag indicates if deployment packages should be build')
 @click.argument('action', nargs=1, type=click.Choice(['start', 'stop']))
 @click.pass_context
-def demo(context, loki, action):
+def demo(context, loki, action, build=True):
+    if action == 'start' and build:
+        context.invoke(package)
     context.invoke(shipper, loki=loki, action=action)
-    for n in ['Probe1', 'Probe2']:
-        context.invoke(probe, name=n, action=action)
+    for n in ['func1', 'func2']:
+        context.invoke(demofunc, name=n, action=action)
     print('Demo {}'.format(action))
 
 
-@cli.command(help="Deploy a mock synthetic probe which is executed once a minute")
-@click.option('-n', '--name', required=True, help='TThe name of the probe to be started')
+@cli.command(short_help="Deploy a demo lambda function which is executed once a minute. The corresponding log group is watched by shipper function.")
+@click.option('-n', '--name', required=True, help='TThe name of the function to be started')
+@click.option('-b', '--build', default=False, is_flag=True, help='Flag indicates if deployment packages should be build')
 @click.argument('action', nargs=1, type=click.Choice(['start', 'stop']))
-def probe(name, action):
-    function_name = 'probe-{}'.format(name)
+@pass_context
+def demofunc(context, name, build, action):
+    if build or __should_package():
+        context.invoke(package)
+
+    function_name = 'demofunc-{}'.format(name)
     log_group_name = '/aws/lambda/{}'.format(function_name)
-    handler = 'scripts/probe.lambda_handler'
+    handler = 'demo-lambda.lambda_handler'
 
     tags = {
-        'probe': name,
-        'info': 'Some info for probe: {}'.format(name),
-        'location': REGION
+        'name': name,
+        'info': 'Hey there Loki. I am: {}'.format(name),
+        'driver': 'Python',
+        'location': context.aws_region
     }
 
     config = {
@@ -42,14 +78,14 @@ def probe(name, action):
         'Runtime': 'python3.7',
         'Role': '',  # Injected on deployment
         'Handler': handler,
-        'Code': {'ZipFile': open('../lambda-loki-logging.zip', 'rb').read()},
-        'Description': 'Loki Shipper Example Probe: {}'.format(function_name)
+        'Code': {'ZipFile': open(DEMO_LAMBDA_ZIP, 'rb').read()},
+        'Description': 'Demo function to ship logs to Loki: {}'.format(function_name)
     }
 
     if action == 'start':
-        log_group_arn = __create_or_update_log_group(log_group_name, tags)
+        __create_or_update_log_group(log_group_name, tags)
         function_arn = __start_lambda(config)
-        # __create_log_subscription(log_group_name, log_group_arn)
+        __create_log_subscription(log_group_name)
         __create_schedule_event('{}-trigger'.format(function_name), function_arn, tags)
 
     elif action == 'stop':
@@ -57,17 +93,21 @@ def probe(name, action):
         __stop_lambda(config)
 
 
-@cli.command(help="Deploy Loki shipper lambda function.")
+@cli.command(short_help="Deploy Loki shipper lambda function.")
 @click.option('-l', '--loki', default='http://localhost:3100', help='Loki endpoint URL')
+@click.option('-b', '--build', default=False, is_flag=True, help='Flag indicates if deployment packages should be build')
 @click.argument('action', nargs=1, type=click.Choice(['start', 'stop']))
-def shipper(loki, action):
+@click.pass_context
+def shipper(context, loki, action, build):
     """        Starts/Stops the shipper lambda function    """
+    if build or __should_package():
+        context.invoke(package)
     config = {
         'FunctionName': SHIPPER_NAME,
         'Runtime': 'python3.7',
         'Role': '',  # Injected on deployment
-        'Handler': 'scripts/loki-shipper.lambda_handler',
-        'Code': {'ZipFile': open('../lambda-loki-logging.zip', 'rb').read()},
+        'Handler': 'loki-shipper.lambda_handler',
+        'Code': {'ZipFile': open(SHIPPER_ZIP, 'rb').read()},
         'Description': 'Loki Shipper',
         'Environment': {
             'Variables': {
@@ -78,7 +118,7 @@ def shipper(loki, action):
     __start_lambda(config) if action == 'start' else __stop_lambda(config)
 
 
-@cli.command(help="Attach log group to the Loki shipper")
+@cli.command(short_help="Attach an existing log group to the Loki shipper.")
 @click.option('-t', '--tags', required=False, multiple=True, help='Tags to be attached to the log group')
 @click.argument('group', nargs=1, type=click.STRING)  # , help='The log group to be attached to shipper.')
 def attach(tags, group):
@@ -94,11 +134,9 @@ def __create_log_subscription(target_log_group):
     """
     Adds a log subscription for the given log group to the shipper lambda function
     :param target_log_group: The log group to be watched
-    :param target_log_group_arn: The arn of the log group
-    :return:
     """
-    lambda_client = b.client('lambda', region_name=REGION)
-    log_client = b.client('logs', region_name=REGION)
+    lambda_client = b.client('lambda')
+    log_client = b.client('logs')
     try:
         get_shipper_response = lambda_client.get_function(FunctionName=SHIPPER_NAME)
 
@@ -125,7 +163,7 @@ def __create_log_subscription(target_log_group):
             filterPattern='',
             logGroupName=target_log_group,
         )
-        print("Created log subscription for {}, on {}".format(target_log_group, SHIPPER_NAME))
+        print("Created log subscription for {}".format(target_log_group))
 
     except Exception as e:
         raise Exception('Failed to create log subscription. Is loki-shipper lambda running?', e)
@@ -139,8 +177,8 @@ def __create_schedule_event(event_name, function_arn, function_input):
     :param function_input: The input for the lambda function
     :return:
     """
-    event_client = b.client('events', region_name=REGION)
-    lambda_client = b.client('lambda', region_name=REGION)
+    event_client = b.client('events')
+    lambda_client = b.client('lambda')
 
     # Create the schedule rule
     rule_arn = event_client.put_rule(Name=event_name,
@@ -173,7 +211,7 @@ def __remove_scheduled_event(event_name):
     Remove a CloudWatch event.
     :param event_name: The event to be removed
     """
-    event_client = b.client('events', region_name=REGION)
+    event_client = b.client('events')
     try:
         event_client.remove_targets(Rule=event_name, Ids=[event_name])
         event_client.delete_rule(Name=event_name)
@@ -186,7 +224,7 @@ def __remove_scheduled_event(event_name):
 
 
 def __create_or_update_log_group(log_group_name, tags):
-    log_client = b.client('logs', region_name=REGION)
+    log_client = b.client('logs')
     try:
         if tags:
             log_client.create_log_group(logGroupName=log_group_name, tags=tags)
@@ -210,11 +248,12 @@ def __create_or_update_log_group(log_group_name, tags):
 
 # Lambda utils
 def __start_lambda(config):
+    print("Starting lambda: " + config['FunctionName'])
     # Create the boto client
-    lambda_client = b.client('lambda', region_name=REGION)
+    lambda_client = b.client('lambda')
     iam_client = b.client('iam')
     # Fetch the role arn
-    role_response = iam_client.get_role(RoleName='loki-logging-example')
+    role_response = iam_client.get_role(RoleName=LOKI_SHIPPER_ROLE_NAME)
     config.update({'Role': role_response['Role']['Arn']})
     function_name = config['FunctionName']
     try:
@@ -236,7 +275,7 @@ def __start_lambda(config):
 
 
 def __stop_lambda(config):
-    lambda_client = b.client('lambda', region_name=REGION)
+    lambda_client = b.client('lambda')
     function_name = config['FunctionName']
     try:
         lambda_client.delete_function(FunctionName=function_name)
@@ -247,6 +286,10 @@ def __stop_lambda(config):
             return
         # Otherwise we rethrow the error
         raise Exception('Failed to stop lambda function: ' + function_name, e)
+
+
+def __should_package():
+    return not os.path.exists(SHIPPER_ZIP) or not os.path.exists(DEMO_LAMBDA_ZIP)
 
 
 if __name__ == '__main__':

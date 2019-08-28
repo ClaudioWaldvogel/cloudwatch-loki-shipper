@@ -32,13 +32,14 @@ def __decode_log_data(log_event):
 
 
 def __create_labels(log_group):
-    cloudwatch_logs = boto3.client('logs', region_name='eu-central-1')
+    aws_region_name = os.environ.get('AWS_REGION')
+    cloudwatch_logs = boto3.client('logs', region_name=aws_region_name)
     try:
         response = cloudwatch_logs.list_tags_log_group(logGroupName=log_group)
         tags = response['tags']
         tags.update({'logGroup': log_group})
         return "{" + ", ".join(["=".join([key, '"' + str(val) + '"']) for key, val in tags.items()]) + "}"
-    except Exception as e:
+    except Exception:
         print('Failed to load tags of resource group. Fallback to logGroup group only.')
         return '{logGroup="' + log_group + '"}'
 
