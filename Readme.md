@@ -1,6 +1,8 @@
 # CloudWatch Loki Logging Example
 Simple demo project to demonstrate how CloudWatch logs can be shipped to Grafanas [Loki](https://grafana.com/loki "Loki Homepage") logging backend.  
 
+Check out the related blog post [here](https://www.novatec-gmbh.de/en/blog/integrating-cloudwatch-logs-with-grafanas-loki/).
+
 ## Idea
 The idea is to create a lambda function which registers a trigger for certain CloudWatch log groups. The function is trigger for all new log entries and forwards
 the entries to Loki. To enabled fine grained filter functionality in Loki, log groups are enriched with AWS tags. The AWS tags are transparently forwarded
@@ -17,10 +19,10 @@ to Loki as labels.
     - IAM read access
     - CloudWatch logs full access
     - CloudWatch events full access
-- A IAM Role with name "**loki-shipper**" for the loki-shipper lambda function with the following
+- A IAM Role with name "**loki-shipper**" for the loki-shipper lambda function with the following permissions
     -  CloudWatch logs full access
 - Install virtualenv. [Link](https://virtualenv.pypa.io/en/stable/installation/)
-- Ensure aws credentials are in place. The Demo CLI utilizes boto3 and thus relies on the credential.
+- Ensure aws credentials are in place. The Demo CLI utilizes boto3 and thus relies on the credentials.
   [link](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html)
 
 ### Install
